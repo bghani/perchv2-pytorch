@@ -148,19 +148,4 @@ If you use this in published work, please cite the original Perch v2 paper:
 }
 ```
 
-If you use this specific PyTorch conversion, please also cite [ChiroEcho](https://arxiv.org/abs/2608.18191), where it was first developed and applied (CV4Ecology - ECCV 2026):
-
-```
-@inproceedings{ghani2026chiroechoextendingautomatedbat,
-      title={ChiroEcho: extending automated bat vocalisation classification beyond the learned taxonomy}, 
-      author={Burooj Ghani and Welmoed Eversteijn and Milan van Hirtum and Juan Sebastián Cañas and Vincent J. Kalkman and Dan Stowell and A. Leonie Baier},
-      year={2026},
-      booktitle={CV4Ecology Workshop, European Conference on Computer Vision (ECCV)},
-      eprint={2608.18191},
-      archivePrefix={arXiv},
-      primaryClass={cs.LG},
-      url={https://arxiv.org/abs/2608.18191},
-}
-```
-
 and note that weights were obtained via community conversion, per [NOTICE](NOTICE).
