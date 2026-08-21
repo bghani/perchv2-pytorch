@@ -2,7 +2,9 @@
 
 Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665).
 
-Built by converting Google's real ONNX computation graph directly into trainable PyTorch modules — confirmed 1.00000000 cosine similarity against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter). Supports:
+Built by converting Google's real ONNX computation graph directly into trainable PyTorch modules — confirmed 1.00000000 cosine similarity against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter).
+
+Supports:
 
 1. **Full (deep) fine-tuning** — unfreeze the whole backbone and train it end-to-end on your own dataset.
 2. **Partial fine-tuning** — freeze the stem and early blocks, train later blocks and the head.
