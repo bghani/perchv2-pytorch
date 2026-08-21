@@ -1,6 +1,6 @@
 # perchv2-pytorch
 
-Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665). Google's official released artifacts ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier), [ONNX](https://huggingface.co/justinchuby/Perch-onnx)) are inference-only; this repo exists to make deep fine-tuning possible.
+Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665). Google's official released artifacts ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier), [ONNX](https://huggingface.co/justinchuby/Perch-onnx)) are inference-only; this repo exists to make **deep fine-tuning** possible.
 
 Built by converting Google's real ONNX computation graph directly into trainable PyTorch modules — confirmed **1.00000000 cosine similarity** against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter). Supports:
 
