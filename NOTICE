@@ -7,11 +7,18 @@ Google Research and distributed under the Apache License, Version 2.0:
     https://www.kaggle.com/models/google/bird-vocalization-classifier
 
 Modifications made in this repository:
-  - Extracted backbone weights from the original JAX/Flax SavedModel
-    (via infer.graph.variables) and converted them into a PyTorch
-    state dict compatible with timm's `tf_efficientnet_b3`.
-  - Reimplemented the mel-spectrogram frontend in PyTorch/torchaudio
-    per the specification in arXiv 2508.04665, Appendix A.2.
+  - Converted Perch v2's released ONNX computation graph directly into
+    trainable PyTorch modules using onnx2torch, including custom
+    converters for three op/version combinations not supported by
+    onnx2torch out of the box (Pad @ opset 18, DFT @ opset 17,
+    ReduceL2/ReduceMax @ opset 18) -- see
+    perchv2_pytorch/onnx_backbone.py for details and verification.
+  - Legacy (see legacy/, not recommended -- legacy/README.md explains
+    why): extracted backbone weights from the original JAX/Flax
+    SavedModel and converted them into a PyTorch state dict compatible
+    with timm's `tf_efficientnet_b3`, and reimplemented the
+    mel-spectrogram frontend in PyTorch/torchaudio per the
+    specification in arXiv 2508.04665, Appendix A.2.
 
 This is an independent, unofficial community conversion. It is not
 produced, reviewed, or endorsed by Google.

@@ -141,15 +141,6 @@ with no arguments needed if all three files are in their default locations (pass
 
 - **Backbone:** stock EfficientNet-B3, `in_chans=1` (Perch's stem takes single-channel log-mel input, not a 3-channel RGB-style image), returning a pooled **1536-dim** embedding. Framing, windowing, and the mel filterbank are all part of the converted ONNX graph — no separate frontend module needed.
 
-## Tests
-
-```bash
-uv pip install -e ".[dev]"   # or: pip install -e ".[dev]"
-pytest legacy/tests/
-```
-
-(The ONNX-converted backbone doesn't currently have its own dedicated unit tests beyond the manual verification documented in `perchv2_pytorch/onnx_backbone.py`'s docstrings — the tests that exist are for the legacy frontend.)
-
 ## Citation
 
 If you use this in published work, please cite the original Perch v2 paper:
