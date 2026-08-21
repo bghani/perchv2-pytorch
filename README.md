@@ -13,7 +13,7 @@ Supports:
 
 ## Why this exists
 
-Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx), not from Google) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
+Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx)) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
 
 This repo provides that: Google's released ONNX graph, converted directly into trainable PyTorch modules, node by node — see "How it was validated" below for how that conversion was verified before being trusted.
 
