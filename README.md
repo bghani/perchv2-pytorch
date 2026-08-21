@@ -26,6 +26,11 @@ This repo provides that: Google's released ONNX graph, converted directly into t
 
 Requires Python ≥3.9.
 
+```bash
+git clone https://github.com/bghani/perchv2-pytorch.git
+cd perchv2-pytorch
+```
+
 ### With [uv](https://docs.astral.sh/uv/) (recommended)
 
 ```bash

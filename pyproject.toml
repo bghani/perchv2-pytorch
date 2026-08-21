@@ -15,11 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
-onnx = ["onnx>=1.14", "onnx2torch>=1.5", "onnxscript", "onnxruntime>=1.16"]
+onnx = ["onnx>=1.14", "onnx2torch>=1.5", "onnxscript", "onnxruntime>=1.16", "ipykernel"]
 # only needed for legacy/ (the non-recommended timm-based backbone, kept
 # for reference -- see legacy/README.md) and for
 # scripts/three_way_embedding_comparison.py, which imports legacy
-legacy = ["timm>=0.9", "torchaudio>=2.0", "huggingface_hub>=0.20", "soundfile"]
+legacy = ["timm>=0.9", "torchaudio>=2.0", "huggingface_hub>=0.20", "soundfile", "ipykernel"]
 
 [tool.setuptools.packages.find]
 include = ["perchv2_pytorch*"]
