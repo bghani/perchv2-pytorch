@@ -1,6 +1,6 @@
 # perchv2-pytorch
 
-Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665). Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx)) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. This repo exists to make deep fine-tuning possible entirely within PyTorch, using only what's publicly released.
+Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665).
 
 Built by converting Google's real ONNX computation graph directly into trainable PyTorch modules — confirmed 1.00000000 cosine similarity against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter). Supports:
 
@@ -11,7 +11,7 @@ Built by converting Google's real ONNX computation graph directly into trainable
 
 ## Why this exists
 
-Google's official Perch v2 releases (TF SavedModel, [ONNX](https://huggingface.co/justinchuby/Perch-onnx), tflite) are all inference-only formats. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
+ Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx)) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
 
 This repo provides that: the Perch v2 backbone (stock EfficientNet-B3, single-channel log-mel input) reimplemented in PyTorch, with weights converted from the original JAX/Flax checkpoint. This is a community conversion, not an official PyTorch release from Google — see "How the conversion was done" below for validation details and its known fidelity limits.
 
