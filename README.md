@@ -65,26 +65,26 @@ batch = torch.zeros(4, 160_000)  # 5s clips @ 32kHz SR, batch of 4
 with torch.no_grad():
     embeddings = embedder(batch)  # (4, 1536)
 ```
-### 2. Full fine-tuning -- mode="finetune" unfreezes the whole backbone
+### 2. Full fine-tuning 
 ```
 import torch
 from perchv2_pytorch import PerchONNXClassifier
-
+#mode="finetune" unfreezes the whole backbone
 model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
 logits = model(waveform)  # gradients flow through everything by default
 ```
-### 3. Partial fine-tuning -- freeze the stem and early blocks, train the rest
+### 3. Partial fine-tuning
 ```import torch
 from perchv2_pytorch import PerchONNXBackbone
-
+# freeze the stem and early blocks, train the rest
 backbone = PerchONNXBackbone("weights/perch_v2.onnx", cache_dir="weights/onnx_cache")
 frozen, trainable = model.backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
 ```
-### 4. Linear probing -- mode="linear_probe" freezes the backbone entirely, trains only the head
+### 4. Linear probing 
 ```
 import torch
 from perchv2_pytorch import PerchONNXClassifier
-
+# mode="linear_probe" freezes the backbone entirely, trains only the head
 model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="linear_probe", cache_dir="weights/onnx_cache")
 ```
 
