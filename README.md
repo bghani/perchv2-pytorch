@@ -27,14 +27,14 @@ Requires Python ≥3.9.
 ### With [uv](https://docs.astral.sh/uv/) (recommended)
 
 ```bash
+# create and activate a virtual environment
 uv venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
+# install the package (editable) + its dependencies
 uv pip install -e ".[onnx]"
-# for development (adds pytest):
-uv pip install -e ".[onnx,dev]"
 ```
-
+`uv venv` creates a `.venv/` in the repo root by default.
 ### With plain `venv` + `pip`
 
 ```bash
@@ -104,7 +104,7 @@ This is purely to demonstrate the training loop mechanics (shapes, what receives
 
 ### Notebook
 
-For a complete, runnable walkthrough — not just the snippet above — see [`notebooks/quickstart_onnx.ipynb`](notebooks/quickstart_onnx.ipynb). It runs each mode's actual training loop to completion (with sanity checks like trainable-parameter counts and gradient norms along the way) against a synthetic 3-class toy dataset, so you can see everything genuinely work end to end before wiring up your own data — the notebook's last section spells out exactly what to change to do that.
+For a complete, runnable walkthrough — not just the snippet above — see [`notebooks/quickstart.ipynb`](notebooks/quickstart.ipynb). It runs each mode's actual training loop to completion (with sanity checks like trainable-parameter counts and gradient norms along the way) against a synthetic 3-class toy dataset, so you can see everything genuinely work end to end before wiring up your own data — the notebook's last section spells out exactly what to change to do that.
 
 ## A note on the legacy backbone
 
