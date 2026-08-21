@@ -82,7 +82,7 @@ from perchv2_pytorch import PerchONNXBackbone
 
 # freeze the stem and early blocks, train the rest
 backbone = PerchONNXBackbone("weights/perch_v2.onnx", cache_dir="weights/onnx_cache")
-frozen, trainable = model.backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
+frozen, trainable = backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
 ```
 ### 4. Linear probing 
 ```python
