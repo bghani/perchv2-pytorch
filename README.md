@@ -53,25 +53,38 @@ Perch v2 and this derivative conversion are both licensed Apache 2.0 (see [LICEN
 
 ## Usage
 
+### 1. Frozen features
+
 ```python
 import torch
-from perchv2_pytorch import PerchONNXEmbedder, PerchONNXBackbone, PerchONNXClassifier
+from perchv2_pytorch import PerchONNXEmbedder
 
-# 1. Frozen features
 embedder = PerchONNXEmbedder("weights/perch_v2.onnx", cache_dir="weights/onnx_cache")
 embedder.eval()
-waveform = torch.zeros(4, 160_000)  # 5s clips @ 32kHz, batch of 4
+batch = torch.zeros(4, 160_000)  # 5s clips @ 32kHz SR, batch of 4
 with torch.no_grad():
-    embeddings = embedder(waveform)  # (4, 1536)
+    embeddings = embedder(batch)  # (4, 1536)
+```
+### 2. Full fine-tuning -- mode="finetune" unfreezes the whole backbone
+```
+import torch
+from perchv2_pytorch import PerchONNXClassifier
 
-# 2. Full fine-tuning
+model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
+logits = model(waveform)  # gradients flow through everything by default
+```
+### 3. Partial fine-tuning -- freeze the stem and early blocks, train the rest
+```import torch
+from perchv2_pytorch import PerchONNXBackbone
+
 backbone = PerchONNXBackbone("weights/perch_v2.onnx", cache_dir="weights/onnx_cache")
-embeddings = backbone(waveform)  # gradients flow through everything by default
+frozen, trainable = model.backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
+```
+### 4. Linear probing -- mode="linear_probe" freezes the backbone entirely, trains only the head
+```
+import torch
+from perchv2_pytorch import PerchONNXClassifier
 
-# 3. Partial fine-tuning -- freeze the stem and early blocks, train the rest
-frozen, trainable = backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
-
-# 4. Classifier wrapper, mode="frozen" / "linear_probe" / "finetune"
 model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="linear_probe", cache_dir="weights/onnx_cache")
 ```
 
@@ -87,9 +100,11 @@ python examples/linear_probe.py
 python examples/full_finetune.py
 ```
 
+This is purely to demonstrate the training loop mechanics (shapes, what receives gradients in each mode) — it's not real bioacoustic data, swap `ToySineDataset` for your own `Dataset` once you're ready to train on real recordings.
+
 ### Notebook
 
-[`notebooks/quickstart_onnx.ipynb`](notebooks/quickstart_onnx.ipynb) — all four modes above, with explanations at each step.
+For a complete, runnable walkthrough — not just the snippet above — see [`notebooks/quickstart_onnx.ipynb`](notebooks/quickstart_onnx.ipynb). It runs each mode's actual training loop to completion (with sanity checks like trainable-parameter counts and gradient norms along the way) against a synthetic 3-class toy dataset, so you can see everything genuinely work end to end before wiring up your own data — the notebook's last section spells out exactly what to change to do that.
 
 ## A note on the legacy backbone
 
