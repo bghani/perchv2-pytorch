@@ -67,7 +67,7 @@ batch = torch.zeros(4, 160_000)  # 5s clips @ 32kHz SR, batch of 4
 with torch.no_grad():
     embeddings = embedder(batch)  # (4, 1536)
 ```
-### 2. Full fine-tuning 
+### 2. Deep fine-tuning: full 
 ```python
 import torch
 from perchv2_pytorch import PerchONNXClassifier
@@ -75,7 +75,7 @@ from perchv2_pytorch import PerchONNXClassifier
 # mode="finetune" unfreezes the whole backbone
 model = PerchONNXClassifier(num_classes=3, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
 ```
-### 3. Partial fine-tuning
+### 3. Deep fine-tuning: partial
 ```python
 import torch
 from perchv2_pytorch import PerchONNXBackbone
