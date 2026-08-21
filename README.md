@@ -53,7 +53,7 @@ Perch v2 and this derivative conversion are both licensed Apache 2.0 (see [LICEN
 
 ## Usage
 
-### 1. Frozen features
+### 1. Frozen embeddings
 
 ```python
 import torch
