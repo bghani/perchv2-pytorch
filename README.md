@@ -70,9 +70,10 @@ with torch.no_grad():
 import torch
 from perchv2_pytorch import PerchONNXClassifier
 
+batch = torch.zeros(4, 160_000)  # 5s clips @ 32kHz SR, batch of 4
 # mode="finetune" unfreezes the whole backbone
-model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
-logits = model(waveform)  # gradients flow through everything by default
+model = PerchONNXClassifier(num_classes=3, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
+logits = model(batch)  # gradients flow through everything by default
 ```
 ### 3. Partial fine-tuning
 ```python
@@ -88,8 +89,10 @@ frozen, trainable = model.backbone.freeze_up_to_block(13)  # freezes stem + bloc
 import torch
 from perchv2_pytorch import PerchONNXClassifier
 
+batch = torch.zeros(4, 160_000)  # 5s clips @ 32kHz SR, batch of 4
 # mode="linear_probe" freezes the backbone entirely, trains only the head
-model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="linear_probe", cache_dir="weights/onnx_cache")
+model = PerchONNXClassifier(num_classes=3, onnx_path="weights/perch_v2.onnx", mode="linear_probe", cache_dir="weights/onnx_cache")
+logits = model(batch)  # gradients only flow through the classifier head
 ```
 
 `PerchONNXBackbone`/`PerchONNXClassifier`/`PerchONNXEmbedder` all take raw waveform directly — framing, windowing, and the mel filterbank are part of the converted graph.
