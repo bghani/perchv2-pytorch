@@ -66,22 +66,23 @@ with torch.no_grad():
     embeddings = embedder(batch)  # (4, 1536)
 ```
 ### 2. Full fine-tuning 
-```
+```python
 import torch
 from perchv2_pytorch import PerchONNXClassifier
-#mode="finetune" unfreezes the whole backbone
+# mode="finetune" unfreezes the whole backbone
 model = PerchONNXClassifier(num_classes=42, onnx_path="weights/perch_v2.onnx", mode="finetune", cache_dir="weights/onnx_cache")
 logits = model(waveform)  # gradients flow through everything by default
 ```
 ### 3. Partial fine-tuning
-```import torch
+```python
+import torch
 from perchv2_pytorch import PerchONNXBackbone
 # freeze the stem and early blocks, train the rest
 backbone = PerchONNXBackbone("weights/perch_v2.onnx", cache_dir="weights/onnx_cache")
 frozen, trainable = model.backbone.freeze_up_to_block(13)  # freezes stem + blocks 0-12
 ```
 ### 4. Linear probing 
-```
+```python
 import torch
 from perchv2_pytorch import PerchONNXClassifier
 # mode="linear_probe" freezes the backbone entirely, trains only the head
