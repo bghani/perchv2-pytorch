@@ -1,0 +1,24 @@
+# This file is for reference -- prefer `pip install -e ".[extras]"` via
+# pyproject.toml, which has these same groups. Everything below EXCEPT
+# torch is commented out because it's optional and situational, not
+# because it's unnecessary -- see which section(s) you actually need:
+
+# Core (always required)
+torch>=2.0
+
+# ONNX-converted backbone (recommended) -- pip install -e ".[onnx]"
+# onnx>=1.14
+# onnx2torch>=1.5
+# onnxscript
+# onnxruntime>=1.16
+
+# legacy/ backbone (not recommended, see legacy/README.md) --
+# pip install -e ".[legacy]"
+# timm>=0.9
+# torchaudio>=2.0
+# huggingface_hub>=0.20
+# soundfile
+
+# scripts/three_way_embedding_comparison.py needs BOTH groups above
+# together, since it constructs both backbones to compare them:
+#     pip install -e ".[onnx,legacy]"

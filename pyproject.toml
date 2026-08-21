@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "perchv2-pytorch"
+version = "0.3.0"
+description = "PyTorch port of Google's Perch v2 bioacoustic backbone for frozen-feature extraction, linear probing, and full deep fine-tuning."
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = [
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+onnx = ["onnx>=1.14", "onnx2torch>=1.5", "onnxscript", "onnxruntime>=1.16"]
+# only needed for legacy/ (the non-recommended timm-based backbone, kept
+# for reference -- see legacy/README.md) and for
+# scripts/three_way_embedding_comparison.py, which imports legacy
+legacy = ["timm>=0.9", "torchaudio>=2.0", "huggingface_hub>=0.20", "soundfile"]
+
+[tool.setuptools.packages.find]
+include = ["perchv2_pytorch*"]
