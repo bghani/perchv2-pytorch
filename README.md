@@ -13,9 +13,9 @@ Supports:
 
 ## Why this exists
 
- Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx)) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
+Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) is inference-only, and so is the ONNX version most people actually use ([community-converted](https://huggingface.co/justinchuby/Perch-onnx), not from Google) — getting a trainable version otherwise would mean working in JAX/Flax rather than PyTorch. ONNX and tflite in particular have no autograd graph — there's no backward pass, so you cannot fine-tune through them, only run forward inference for embeddings or logits. If you want gradients flowing back through Perch's convolutional layers — actually adapting the backbone to your domain rather than just linear-probing on top of frozen features — you need a training-capable framework.
 
-This repo provides that: the Perch v2 backbone (stock EfficientNet-B3, single-channel log-mel input) reimplemented in PyTorch, with weights converted from the original JAX/Flax checkpoint. This is a community conversion, not an official PyTorch release from Google — see "How the conversion was done" below for validation details and its known fidelity limits.
+This repo provides that: Google's released ONNX graph, converted directly into trainable PyTorch modules, node by node — see "How it was validated" below for how that conversion was verified before being trusted.
 
 ## How it was validated
 
