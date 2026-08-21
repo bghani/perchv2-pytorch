@@ -19,11 +19,6 @@ This repo provides that: the Perch v2 backbone (stock EfficientNet-B3, single-ch
 
 `onnx2torch` translates each node in Google's actual released ONNX graph directly into an equivalent PyTorch operation — there's no architecture to guess at, since every op's exact parameters (weights, biases, padding, strides) are already fully specified in the graph itself. Three op(version) combinations needed custom converters not built into `onnx2torch` out of the box (`Pad`@18, `DFT`@17, `ReduceL2`/`ReduceMax`@18 — see [`perchv2_pytorch/onnx_backbone.py`](perchv2_pytorch/onnx_backbone.py) for what each does and how it was verified against `onnxruntime` directly before being trusted).
 
-## A note on the legacy backbone
-
-An earlier version of this repo also shipped a hand-reconstructed `timm`-based backbone. It's been moved to [`legacy/`](legacy/) and is **not recommended**. A three-way comparison against real ONNX output found it sitting at a **relative L2 error of ~0.23–0.29** despite a reassuring-looking ~0.96 cosine similarity — cosine similarity measures an angle, not magnitude, and can look close to 1.0 while a large error still hides underneath it. This showed up concretely: a linear probe trained on its frozen embeddings converged slower and to a lower accuracy than one trained on the ONNX-converted backbone's embeddings on the same toy task. See [`legacy/README.md`](legacy/README.md) for the full story, including an unresolved architectural bug that may be the root cause — something to come back to later, not a dead end.
-
-You can reproduce this comparison yourself — see below.
 
 ## Install
 
@@ -52,7 +47,7 @@ pip install -e ".[onnx]"
 
 ## Getting the weights
 
-You need the original `perch_v2.onnx` file — this repo doesn't redistribute it. Get it from Google's official release ([Kaggle](https://www.kaggle.com/models/google/bird-vocalization-classifier)) or an existing ONNX export such as [`justinchuby/Perch-onnx`](https://huggingface.co/justinchuby/Perch-onnx), and place it at `weights/perch_v2.onnx`.
+You need the original `perch_v2.onnx` file — this repo doesn't redistribute it. Get it from [`justinchuby/Perch-onnx`](https://huggingface.co/justinchuby/Perch-onnx/tree/main), and place it at `weights/perch_v2.onnx`.
 
 Perch v2 and this derivative conversion are both licensed Apache 2.0 (see [LICENSE](LICENSE) and [NOTICE](NOTICE)) — redistribution and modification are permitted, but this is an unofficial community conversion, not something produced or endorsed by Google.
 
@@ -95,6 +90,12 @@ python examples/full_finetune.py
 ### Notebook
 
 [`notebooks/quickstart_onnx.ipynb`](notebooks/quickstart_onnx.ipynb) — all four modes above, with explanations at each step.
+
+## A note on the legacy backbone
+
+An earlier version of this repo also shipped a hand-reconstructed `timm`-based backbone. It's been moved to [`legacy/`](legacy/) and is **not recommended**. A three-way comparison against real ONNX output found it sitting at a **relative L2 error of ~0.23–0.29** despite a reassuring-looking ~0.96 cosine similarity — cosine similarity measures an angle, not magnitude, and can look close to 1.0 while a large error still hides underneath it. This showed up concretely: a linear probe trained on its frozen embeddings converged slower and to a lower accuracy than one trained on the ONNX-converted backbone's embeddings on the same toy task. See [`legacy/README.md`](legacy/README.md) for the full story, including an unresolved architectural bug that may be the root cause — something to come back to later, not a dead end.
+
+You can reproduce this comparison yourself — see below.
 
 ## Compare frozen embeddings across three implementations
 
