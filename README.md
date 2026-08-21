@@ -2,7 +2,7 @@
 
 Unofficial PyTorch implementation of [Perch v2: The Bittern Lesson for Bioacoustics](https://arxiv.org/abs/2508.04665).
 
-Built by converting Google's real ONNX computation graph directly into trainable PyTorch modules — confirmed 1.00000000 cosine similarity against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter).
+Built by converting the community's ONNX export of Perch v2 directly into trainable PyTorch modules — confirmed 1.00000000 cosine similarity against `onnxruntime`'s own output on real audio, and fully differentiable (gradients confirmed reaching every parameter).
 
 Supports:
 
