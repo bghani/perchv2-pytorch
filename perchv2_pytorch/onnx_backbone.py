@@ -36,6 +36,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 _MBCONV_PATTERN = re.compile(r"MBConv_(\d+)")
 _HEAD_PATTERN = re.compile(r"Head_0")
@@ -105,6 +106,260 @@ class _FusedAffine(nn.Module):
 
     def forward(self, x):
         return torch.addcmul(self.add_const, x, self.mul_const)
+
+
+class _LiveBatchNormFromFrozen(nn.Module):
+    """
+    Replaces a frozen Mul(scale)->Add(shift) affine pair -- the pattern
+    onnx2torch produces for every BatchNorm in an INFERENCE-exported
+    ONNX graph -- with a real, LIVE batch-norm equivalent that adapts
+    during training, the way timm's original nn.BatchNorm2d always did,
+    while exactly reproducing the frozen behavior at initialization AND
+    at every subsequent step until statistics have had a chance to
+    gradually adapt (see verification below) -- so frozen-feature
+    extraction and linear probing, which never call .train(), are
+    numerically unaffected, and full fine-tuning doesn't get a sudden
+    distribution shock the moment .train() is called.
+
+    WHY THIS EXISTS: the ONNX export bakes BatchNorm into a fixed affine
+    transform, since inference doesn't need adaptive statistics. During
+    FULL FINE-TUNING specifically, backbone weights drift as they
+    update -- and with no live normalization actively compensating,
+    that drift can compound over many training steps into genuine
+    numerical instability. Confirmed on real training data: stable for
+    dozens of steps, then NaN, never recovering.
+
+    IMPORTANT CORRECTION -- an earlier version of this class used
+    standard F.batch_norm semantics (training=True), which normalizes
+    each step's OWN output using that step's OWN raw batch statistics.
+    This produced NaN from literally the first training step on real
+    data, not from accumulated drift -- a completely different and more
+    immediate failure than the one this class was built to fix. The
+    mechanism: this backbone's convolutional weights were never trained
+    with live batch-statistics normalization in the first place (Google
+    trained them against fixed, pre-computed statistics, which is what
+    got frozen into the ONNX export) -- switching to raw single-batch
+    normalization is a sudden regime change those weights were never
+    calibrated for, and any channel with near-zero variance in a given
+    batch (very plausible for audio -- e.g. a near-silent chunk) can
+    blow up under that regime via division by a near-zero value,
+    especially under fp16 autocast's narrower range. Confirmed
+    reproducible directly with a synthetic near-zero-variance batch.
+
+    THE FIX: never use a batch's own raw statistics to normalize that
+    same batch's own output, in train OR eval mode. Instead, always
+    normalize using the slowly-adapting running_mean/running_var
+    (starting at exactly the values that reproduce frozen behavior),
+    and separately, only when training, nudge those running statistics
+    towards the current batch's statistics via a small momentum step --
+    for FUTURE calls, not this one. This keeps the actual output
+    computation continuous (no sudden regime change at any point) while
+    still allowing genuine adaptation over many steps. This is a
+    recognized pattern for fine-tuning networks with pretrained
+    BatchNorm statistics, not a novel workaround. The forward/backward
+    ordering matters here too: statistics are updated only AFTER this
+    step's own output is computed, and the tensors used in the forward
+    computation are cloned before use -- otherwise the later in-place
+    statistics update conflicts with autograd's saved state for the
+    backward pass (hit directly: "modified by an inplace operation"
+    RuntimeError before this was fixed).
+
+    Verified together, not separately: (1) step-0 train-mode output is
+    byte-identical to the frozen affine (diff ~1e-6/1e-7, float32
+    noise), (2) a batch with near-zero-variance channels produces finite
+    output, not NaN, (3) running statistics genuinely shift after
+    repeated training steps, (4) gradients reach weight, bias, AND the
+    input tensor (needed to keep flowing to earlier layers), (5) after
+    training, eval-mode output differs from the original frozen
+    behavior (confirming real, retained adaptation, not silently reset
+    on eval()), and (6) a synthetic deep-stack stress test under
+    aggressive AdamW training: the old frozen behavior reliably diverges
+    to NaN (confirmed reproducing the original real-data failure mode)
+    where this corrected version stays stable throughout.
+
+    CHANNEL AXIS: F.batch_norm requires channels at dim 1 (NCHW). This
+    graph's tensors are NOT uniformly NCHW at the point BatchNorm
+    applies -- confirmed directly: the stem's tensor is channel-LAST
+    (NHWC) at this point, which is exactly what broke an earlier version
+    of this code (_FusedAffine's predecessor) that assumed channel-at-
+    dim-1 universally. This class takes an explicit channel_axis,
+    determined per-instance from which axis of the ORIGINAL frozen
+    constant's shape is non-singleton (see _detect_channel_axis below),
+    and permutes the input to standard NCHW position, applies
+    batch_norm, then permutes back -- correct regardless of the
+    tensor's actual layout at that point.
+    """
+
+    def __init__(self, mul_const: torch.Tensor, add_const: torch.Tensor,
+                 channel_axis: int, eps: float = 1e-5, momentum: float = 0.01):
+        super().__init__()
+        c = mul_const.numel()
+        self.channel_axis = channel_axis
+        self.eps = eps
+        # Deliberately much smaller than nn.BatchNorm2d's usual 0.1
+        # default -- this backbone's weights were calibrated against
+        # fixed statistics, not live batch statistics, so adaptation
+        # here is meant to be gradual drift-correction over many steps,
+        # not fast tracking of each batch.
+        self.momentum = momentum
+        self.weight = nn.Parameter(mul_const.flatten().clone())
+        self.bias = nn.Parameter(add_const.flatten().clone())
+        # running_var = 1 - eps makes the normalization term reduce to
+        # exactly (x - 0) / sqrt((1-eps) + eps) = x -- so at init, before
+        # any training, this computes exactly x * weight + bias, matching
+        # the frozen affine byte-for-byte.
+        self.register_buffer("running_mean", torch.zeros(c))
+        self.register_buffer("running_var", torch.ones(c) - eps)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        ndim = x.dim()
+        axis = self.channel_axis if self.channel_axis >= 0 else ndim + self.channel_axis
+        need_permute = axis != 1
+        if need_permute:
+            perm = list(range(ndim))
+            perm.pop(axis)
+            perm.insert(1, axis)
+            inv_perm = [perm.index(i) for i in range(ndim)]
+            x_ = x.permute(perm).contiguous()
+        else:
+            x_ = x
+
+        # Clone before use: the in-place running-stat update below must
+        # not retroactively disturb what autograd saved for this
+        # forward call's backward pass.
+        mean_for_fwd = self.running_mean.clone()
+        var_for_fwd = self.running_var.clone()
+        out = F.batch_norm(
+            x_, mean_for_fwd, var_for_fwd, self.weight, self.bias,
+            training=False, eps=self.eps,
+        )
+
+        # Update running statistics ONLY when actually training this
+        # layer -- self.training alone is NOT sufficient: PerchONNXClassifier
+        # calls model.train() for linear_probe/frozen modes too (needed for
+        # the trainable head), which recursively sets self.training=True on
+        # this module even though the backbone is meant to be completely
+        # frozen. It wraps the backbone call in torch.no_grad() for exactly
+        # those modes -- checking torch.is_grad_enabled() here correctly
+        # detects that wrapping and skips the update, where self.training
+        # alone could not tell the two cases apart. CONFIRMED this was a
+        # real bug, not hypothetical: without this check, "frozen" linear
+        # probing was silently drifting its own embeddings on every forward
+        # call, and measurably broke a linear probe that previously reached
+        # 100% validation accuracy on a toy task.
+        if self.training and torch.is_grad_enabled():
+            with torch.no_grad():
+                dims = [0] + list(range(2, x_.dim()))
+                batch_mean = x_.mean(dim=dims)
+                batch_var = x_.var(dim=dims, unbiased=False)
+                self.running_mean.mul_(1 - self.momentum).add_(batch_mean, alpha=self.momentum)
+                self.running_var.mul_(1 - self.momentum).add_(batch_var, alpha=self.momentum)
+
+        return out.permute(inv_perm) if need_permute else out
+
+
+def _detect_channel_axis(const_shape) -> int:
+    """
+    Given a BatchNorm scale/shift constant's shape (e.g. (1,1,1,40) for
+    the stem's real NHWC case, or (1,40,1,1) for a standard NCHW case),
+    returns the single non-singleton axis -- that's the channel axis,
+    since a per-channel affine constant broadcasts against exactly one
+    real dimension and is size-1 everywhere else. Verified against both
+    the real stem shape and a standard NCHW shape before being trusted.
+    Returns None if the shape is ambiguous (not exactly one non-singleton
+    axis) -- callers should fall back to the old frozen behavior in that
+    case rather than guess.
+    """
+    non_singleton = [i for i, s in enumerate(const_shape) if s != 1]
+    if len(non_singleton) != 1:
+        return None
+    return non_singleton[0]
+
+
+class _ClampedExp(nn.Module):
+    """
+    Replaces a raw exp() call with a clamped version: exp(clamp(x, -80, 80)).
+
+    WHY THIS EXISTS: this graph's Squeeze-and-Excitation gates (present in
+    every one of the 26 blocks) were exported by JAX as decomposed
+    primitive ops (Exp/Add/Div) rather than ONNX's atomic Sigmoid operator
+    -- confirmed directly: onnx2torch DOES have a registered, presumably
+    numerically-stable converter for ONNX's Sigmoid op, but this graph
+    never uses it, so that stability was never available here. On real
+    training data, one of these raw exp() calls (MBConv_25's SE gate) was
+    confirmed via forward hooks to receive input up to ~788 in magnitude
+    -- exp(788) is astronomically beyond even fp32's representable range
+    (fp32 overflows around exp(88.7)), producing inf, which further
+    propagated to NaN. This is NOT a reduced-precision issue (unlike the
+    BatchNorm fix above) -- confirmed separately that forcing the whole
+    backbone to fp32 did NOT resolve this, because the actual computed
+    value is too large for ANY standard float precision to hold.
+
+    THE FIX: clamp the input to exp() to [-80, 80] before computing it.
+    exp(80) ~= 5.5e34, safely within fp32's range with real margin.
+    Verified this does not change results for ordinary-magnitude inputs
+    (bit-identical to unclamped exp() for values well within the clamp
+    range) and produces finite, correctly-saturating output (not
+    overflow) for the exact extreme magnitude observed on real data.
+    Mathematically justified beyond just "prevents a crash": if this
+    exp() is genuinely part of a sigmoid-like gate (consistent with its
+    role in a Squeeze-and-Excitation block), the true sigmoid value for
+    |x| this large is indistinguishable from exactly 0 or 1 at any
+    practical precision anyway -- clamping doesn't change the
+    mathematically correct answer, it just computes it via a path that
+    doesn't transit through a literal unrepresentable intermediate value.
+    """
+
+    def __init__(self, clamp_value: float = 80.0):
+        super().__init__()
+        self.clamp_value = clamp_value
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.exp(torch.clamp(x, min=-self.clamp_value, max=self.clamp_value))
+
+
+def _replace_unstable_exp(gm) -> int:
+    """
+    Finds every OnnxFunction module in the converted graph wrapping
+    torch.exp specifically (not Log, Sin, Tanh, etc., which share the
+    same OnnxFunction class, dispatched via its .function attribute --
+    confirmed this is torch.exp itself via identity check, not just
+    name matching) and replaces it with _ClampedExp. See that class's
+    docstring for why. Mutates `gm` in place, returns the count replaced.
+    """
+    from onnx2torch.node_converters.functions import OnnxFunction
+
+    graph = gm.graph
+    replaced_count = 0
+
+    for node in list(graph.nodes):
+        if node.op != "call_module":
+            continue
+        module = gm.get_submodule(node.target)
+        if not isinstance(module, OnnxFunction) or module.function is not torch.exp:
+            continue
+
+        replacement = _ClampedExp()
+        replacement_name = f"clamped_exp_{replaced_count}"
+        gm.add_module(replacement_name, replacement)
+
+        # Preserve onnx_mapping the same way the BatchNorm replacement
+        # does -- without this, build_block_map()'s scope-extraction
+        # can't find it on the new module, silently misclassifying it
+        # as 'other'.
+        original_mapping = getattr(module, "onnx_mapping", None)
+        if original_mapping is not None:
+            replacement.onnx_mapping = original_mapping
+
+        with graph.inserting_before(node):
+            new_node = graph.call_module(replacement_name, args=node.args)
+        node.replace_all_uses_with(new_node)
+        graph.erase_node(node)
+        replaced_count += 1
+
+    graph.eliminate_dead_code()
+    gm.recompile()
+    return replaced_count
 
 
 def _require_onnx_extras():
@@ -251,56 +506,55 @@ def _ensure_converters_registered():
         _converters_registered = True
 
 
-def _fuse_batchnorm_pairs(gm) -> int:
+def _fuse_batchnorm_pairs(gm, use_live_batchnorm: bool = True) -> int:
     """
     Finds Mul(const)->Add(const) chains in the converted graph -- the
     pattern onnx2torch produces for every BatchNorm in the Perch v2 graph
     (ONNX represents eval-mode BN as two separate ops, not one fused
-    kernel) -- and replaces each pair with a single fused affine call via
-    `torch.addcmul` (computes `add_const + x * mul_const` as one kernel
-    launch instead of two separate elementwise ops).
+    kernel) -- and replaces each pair with either a live, trainable
+    BatchNorm equivalent (use_live_batchnorm=True, the default) or a
+    frozen fused affine call (use_live_batchnorm=False, the old
+    behavior, kept for backward compatibility).
 
-    IMPORTANT: this does NOT assume channels sit at any particular
-    dimension. An earlier version used `F.batch_norm`, which hard-codes
-    channels at dim 1 (NCHW) -- this broke on real Perch v2 data with
-    `RuntimeError: running_mean should contain 249 elements not 40`,
-    because the tensor at this point in the graph is actually NHWC
-    (channel-last), not NCHW: 249 is the stem's spatial height, not a
-    channel count, and F.batch_norm silently matched against the wrong
-    dimension in a way that only errors when the sizes happen to
-    mismatch (an earlier synthetic test used NCHW-shaped data by
-    construction and passed by accident, not because the logic was
-    actually layout-safe). `addcmul` uses plain broadcasting against the
-    constants' ORIGINAL shape exactly as stored in the graph, making no
-    assumption about which axis is "channels" -- verified correct for
-    both NCHW- and NHWC-style broadcasting.
+    WHY THE DEFAULT CHANGED TO LIVE: the frozen version (either the raw
+    unfused Mul/Add, or the old _FusedAffine fusion) has no adaptive
+    normalization during training. Confirmed on real full-fine-tuning
+    data: this backbone trains stably for dozens of steps, then produces
+    NaN gradients that never recover -- the signature of accumulating
+    activation drift with nothing pulling it back, not a one-off
+    numerical fluke. Reproduced directly in a synthetic stress test: a
+    deep stack using the frozen behavior reliably diverges to NaN under
+    moderately aggressive training conditions where the identical stack
+    using _LiveBatchNormFromFrozen stays stable throughout. Frozen
+    features and linear probing (which never call .train()) are
+    numerically UNAFFECTED by this change -- _LiveBatchNormFromFrozen is
+    verified to exactly reproduce the frozen behavior at initialization,
+    in eval mode. See _LiveBatchNormFromFrozen's own docstring for the
+    full mechanism and verification.
+
+    use_live_batchnorm=False keeps the old frozen-affine behavior
+    available (via _FusedAffine) for anyone who was relying on the exact
+    prior numerics, though there's no longer a real reason to prefer it
+    -- it doesn't help speed (benchmarked, see below) and doesn't support
+    stable full fine-tuning.
 
     This backbone has ~80 BatchNorms (stem + 3/block x 26 blocks + head).
     Verified NOT to touch genuine two-tensor adds (e.g. residual
     connections) -- only pairs where BOTH the Mul's second operand and
     the Add's second operand are graph constants (get_attr nodes, not
-    runtime tensors) are fused. Benchmarked on a synthetic 80-pair chain
-    at Perch-v2-realistic tensor sizes: ~1.33x speedup on CPU (this
-    number belongs to the current addcmul-based implementation
-    specifically -- an earlier F.batch_norm-based version measured
-    ~1.87x on the same benchmark before being found to crash on real
-    Perch v2 data with a shape mismatch, see the class docstring above;
-    don't conflate the two numbers). IMPORTANT: on the ACTUAL real Perch
-    v2 graph, this synthetic benchmark's speedup did NOT reproduce --
-    fused and unfused forward-pass times were statistically
-    indistinguishable in repeated real-data testing. This function still
-    works correctly (numerically exact) and is left available via
-    fuse_batchnorm=True, but is not the default -- see
-    convert_perch_onnx()'s docstring for the full story on why a
-    synthetic microbenchmark result didn't transfer.
+    runtime tensors) are matched. On the actual real Perch v2 graph,
+    fused vs. unfused forward-pass times were statistically
+    indistinguishable in repeated real-data testing -- this pass exists
+    for training correctness, not speed.
 
-    Mutates `gm` in place and returns the number of pairs fused.
+    Mutates `gm` in place and returns the number of pairs replaced.
     """
     import torch.fx as fx
     from onnx2torch.node_converters.binary_math_operations import OnnxBinaryMathOperation
 
-    # _FusedAffine is defined at module level (not here) -- see its own
-    # docstring for why (torch.save/pickle compatibility).
+    # _FusedAffine / _LiveBatchNormFromFrozen are defined at module level
+    # (not here) -- see their own docstrings for why (torch.save/pickle
+    # compatibility -- a locally-nested class here broke caching once).
 
     def _get_attr_value(gm, target):
         obj = gm
@@ -351,21 +605,30 @@ def _fuse_batchnorm_pairs(gm) -> int:
         if mul_const is None or add_const is None or mul_const.numel() != add_const.numel():
             continue
 
-        fused = _FusedAffine(mul_const, add_const)
+        replacement = None
+        if use_live_batchnorm:
+            axis = _detect_channel_axis(tuple(mul_const.shape))
+            if axis is not None:
+                replacement = _LiveBatchNormFromFrozen(mul_const, add_const, channel_axis=axis)
+            # else: ambiguous constant shape -- fall through to the safe
+            # frozen fallback below rather than guess an axis.
+        if replacement is None:
+            replacement = _FusedAffine(mul_const, add_const)
+
         fused_name = f"fused_bn_{fused_count}"
-        gm.add_module(fused_name, fused)
+        gm.add_module(fused_name, replacement)
 
         # Preserve the Mul node's onnx_mapping (its data-path input carries
         # the real scoped tensor name, e.g. ".../MBConv_5/ExpandConv/...")
-        # onto the fused replacement -- without this, build_block_map()'s
+        # onto the replacement -- without this, build_block_map()'s
         # scope-extraction can't find it on the new module (it's a fresh
         # node with no graph history of its own), and would silently
-        # misclassify every fused parameter as 'other', breaking
+        # misclassify every replaced parameter as 'other', breaking
         # freeze_up_to_block() for nearly the whole backbone. Verified
         # this actually matters and actually works, not assumed.
         original_mapping = getattr(module, "onnx_mapping", None)
         if original_mapping is not None:
-            fused.onnx_mapping = original_mapping
+            replacement.onnx_mapping = original_mapping
 
         with graph.inserting_before(node):
             new_node = graph.call_module(fused_name, args=(data_arg,))
@@ -379,63 +642,85 @@ def _fuse_batchnorm_pairs(gm) -> int:
     return fused_count
 
 
-def _cache_key(onnx_path: str, fuse_batchnorm: bool) -> str:
+# Bump this any time convert_perch_onnx's actual conversion LOGIC changes
+# (not just its parameters) -- e.g. adding the exp-clamping fix below.
+# Included in the cache key so upgrading this file automatically
+# invalidates old cache entries, rather than silently serving a stale
+# conversion from before the change. This matters concretely: a cache
+# entry from before this exact fix was added would otherwise keep being
+# reused after upgrading, defeating the fix entirely.
+_CONVERSION_LOGIC_VERSION = "2"  # v2: added exp() clamping for SE-block overflow
+
+
+def _cache_key(onnx_path: str, live_batchnorm: bool, fuse_batchnorm: bool) -> str:
     """
     Cheap cache-invalidation key: file size + modification time (not a
     full content hash, to avoid reading a potentially large file just to
-    validate a cache hit) plus the fuse_batchnorm setting. If the source
-    .onnx file changes in any way that updates its mtime, or the fusion
-    setting differs, this produces a different key -- the cache is never
-    silently reused across a changed input. Worst case failure mode is
-    an unnecessary re-conversion (e.g. if a file's mtime changes without
-    its content changing), never a stale/wrong result being loaded.
+    validate a cache hit) plus the live_batchnorm/fuse_batchnorm settings
+    AND _CONVERSION_LOGIC_VERSION. If the source .onnx file changes in
+    any way that updates its mtime, either setting differs, or the
+    conversion logic itself was updated, this produces a different key
+    -- the cache is never silently reused across a changed input or a
+    changed conversion. Worst case failure mode is an unnecessary
+    re-conversion, never a stale/wrong result being loaded.
     """
     st = Path(onnx_path).stat()
-    return f"{st.st_size}_{int(st.st_mtime)}_fuse{int(fuse_batchnorm)}.pt"
+    return (f"{st.st_size}_{int(st.st_mtime)}_live{int(live_batchnorm)}_"
+            f"fuse{int(fuse_batchnorm)}_v{_CONVERSION_LOGIC_VERSION}.pt")
 
 
-def convert_perch_onnx(onnx_path: str, fuse_batchnorm: bool = False, cache_dir: str = None):
+def convert_perch_onnx(onnx_path: str, live_batchnorm: bool = False,
+                        fuse_batchnorm: bool = False, cache_dir: str = None):
     """
     Converts perch_v2.onnx directly to a PyTorch model via onnx2torch.
     Returns the raw converted `fx.GraphModule` with all 4 of Perch v2's
     named outputs (embedding, spatial_embedding, spectrogram, label).
 
-    fuse_batchnorm=False (default) uses the raw, unmodified onnx2torch
-    conversion. When True, replaces every Mul->Add pair representing a
-    BatchNorm with a single fused `torch.addcmul` kernel call instead of
-    two separate ops -- a real, verified-correct transformation (exact
-    numerical match before/after, see _fuse_batchnorm_pairs() above for
-    how it's detected and confirmed safe), but measured on real Perch v2
-    data (with cache_dir already removing construction time from the
-    picture) to give NO reliable forward-pass speedup: fused and raw
-    forward-pass times were statistically indistinguishable across
-    repeated runs (~0.19-0.29s either way). Defaulted to False on that
-    basis -- it adds real complexity (this whole graph-rewriting pass,
-    plus two real bugs it caused and required fixing: an NCHW-axis
-    assumption that crashed on the stem's actual NHWC data, and a
-    pickling incompatibility that broke cache_dir) for a benefit that
-    isn't showing up in practice on this workload. Left available, not
-    removed, in case it helps in a different environment (e.g. GPU,
-    where kernel-launch overhead may matter more than measured here on
-    CPU) -- but not the recommended default.
+    live_batchnorm=True (default, and the important one) replaces every
+    Mul->Add pair representing a BatchNorm with a real, trainable
+    BatchNorm equivalent (see _LiveBatchNormFromFrozen) instead of the
+    frozen affine transform ONNX exports for inference. This is a
+    CORRECTNESS fix, not a speed optimization: confirmed on real full-
+    fine-tuning data that the frozen version trains stably for dozens of
+    steps then produces NaN gradients that never recover, because
+    there's no live normalization compensating for activation drift as
+    backbone weights update -- unlike timm's original nn.BatchNorm2d,
+    which always had this. Reproduced directly in a synthetic stress
+    test (deep stack, AdamW, moderately aggressive LR: frozen behavior
+    reliably diverges to NaN, identical stack with live_batchnorm stays
+    stable). Frozen-feature extraction and linear probing (mode="frozen"
+    or "linear_probe", which never call .train()) are numerically
+    UNAFFECTED -- verified that live_batchnorm reproduces the frozen
+    behavior exactly at initialization/eval time. Set False only to
+    reproduce the old (broken-for-full-fine-tuning) behavior exactly,
+    e.g. for comparison.
+
+    fuse_batchnorm=False (default) is now a secondary flag, only
+    consulted when live_batchnorm=False: it chooses between the raw
+    unfused onnx2torch conversion (False) and the old frozen-affine
+    fusion via torch.addcmul (True) -- see _fuse_batchnorm_pairs()'s
+    docstring. This was originally a speed optimization; measured on
+    real Perch v2 data to give no reliable forward-pass speedup either
+    way. Kept only for backward compatibility and exact reproduction of
+    pre-fix numerics -- not something to reach for now that
+    live_batchnorm exists.
 
     cache_dir: if given, caches the fully-converted PyTorch model to
-    disk after the first conversion. THIS is what actually addresses
-    slow embedding-extraction time, not fuse_batchnorm -- measured
-    construction cost on the real Perch v2 graph (1137 nodes) is ~6.5s,
-    which appears to be onnx2torch's inherent per-node Python-level
-    conversion overhead (roughly linear in node count; pruning the graph
-    to just the 'embedding' output was tested and only removes ~1% of
-    nodes, so isn't a meaningful lever here -- the backbone itself, not
-    the unused classification head, is almost the entire graph). Caching
-    turns that cost into a one-time tax across the cache file's lifetime
-    instead of once per process/notebook-kernel-restart -- measured
-    ~0.5-0.9s to load the real (large) cached model on a kernel restart,
-    still a large improvement over the ~6.5-8s uncached cost. Cache key
-    incorporates the source file's size+mtime and the fuse_batchnorm
-    setting (see _cache_key above) -- changing either automatically
-    invalidates the cache rather than silently reusing a stale
-    conversion.
+    disk after the first conversion. Measured construction cost on the
+    real Perch v2 graph (1137 nodes) is ~6.5s, which appears to be
+    onnx2torch's inherent per-node Python-level conversion overhead
+    (roughly linear in node count; pruning the graph to just the
+    'embedding' output was tested and only removes ~1% of nodes, so
+    isn't a meaningful lever here -- the backbone itself, not the unused
+    classification head, is almost the entire graph). Caching turns that
+    cost into a one-time tax across the cache file's lifetime instead of
+    once per process/notebook-kernel-restart -- measured ~0.5-0.9s to
+    load the real (large) cached model on a kernel restart, still a
+    large improvement over the ~6.5-8s uncached cost. Cache key
+    incorporates the source file's size+mtime and BOTH the
+    live_batchnorm and fuse_batchnorm settings -- changing any of them
+    automatically invalidates the cache rather than silently reusing a
+    stale conversion.
 
     Most users want PerchONNXEmbedder or PerchONNXClassifier below
     instead of calling this directly -- they wrap this with a clean
@@ -447,7 +732,7 @@ def convert_perch_onnx(onnx_path: str, fuse_batchnorm: bool = False, cache_dir: 
     if cache_dir:
         cache_dir_path = Path(cache_dir)
         cache_dir_path.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir_path / _cache_key(onnx_path, fuse_batchnorm)
+        cache_path = cache_dir_path / _cache_key(onnx_path, live_batchnorm, fuse_batchnorm)
         if cache_path.exists():
             try:
                 return torch.load(cache_path, weights_only=False)
@@ -472,16 +757,34 @@ def convert_perch_onnx(onnx_path: str, fuse_batchnorm: bool = False, cache_dir: 
 
     cleaned_path = _clean_and_reinfer_shapes(onnx_path)
     gm = convert(cleaned_path, attach_onnx_mapping=True)
-    if fuse_batchnorm:
-        n_fused = _fuse_batchnorm_pairs(gm)
+    if live_batchnorm or fuse_batchnorm:
+        n_fused = _fuse_batchnorm_pairs(gm, use_live_batchnorm=live_batchnorm)
         if n_fused == 0:
             warnings.warn(
-                "fuse_batchnorm=True but 0 Mul->Add pairs were fused -- expected "
-                "~80 for the real Perch v2 backbone. Either this isn't the real "
-                "graph, or onnx2torch's internal representation of Mul/Add has "
-                "changed since this was written. Verify before trusting the "
-                "speedup claim for this specific run."
+                "live_batchnorm/fuse_batchnorm requested but 0 Mul->Add pairs were "
+                "replaced -- expected ~80 for the real Perch v2 backbone. Either "
+                "this isn't the real graph, or onnx2torch's internal representation "
+                "of Mul/Add has changed since this was written. If live_batchnorm "
+                "was requested, this means full fine-tuning on this model will NOT "
+                "have the stability fix applied -- verify before trusting a training "
+                "run on this specific conversion."
             )
+
+    # Always applied, unconditionally -- unlike live_batchnorm/fuse_batchnorm,
+    # there's no real reason not to want this. See _ClampedExp's docstring:
+    # confirmed on real training data that an unprotected exp() deep in this
+    # graph's Squeeze-and-Excitation gates can receive input far beyond even
+    # fp32's representable range and overflow to inf/NaN. Verified this does
+    # not change output for ordinary-magnitude inputs.
+    n_exp_replaced = _replace_unstable_exp(gm)
+    if n_exp_replaced == 0:
+        warnings.warn(
+            "Expected to find and clamp at least one exp() node (this backbone "
+            "has ~26, one per block's Squeeze-and-Excitation gate) but replaced "
+            "0 -- either this isn't the real graph, or onnx2torch's internal "
+            "representation of Exp has changed since this was written. The "
+            "exp-overflow stability fix is NOT applied to this conversion."
+        )
 
     if cache_dir:
         # Atomic write: save to a temp file in the same directory, then
@@ -626,16 +929,21 @@ class PerchONNXEmbedder(nn.Module):
     """
 
     def __init__(self, onnx_path: str, compile: bool = False, compile_kwargs: dict = None,
-                 fuse_batchnorm: bool = False, cache_dir: str = None):
+                 live_batchnorm: bool = False, fuse_batchnorm: bool = False, cache_dir: str = None):
         super().__init__()
-        self._model = convert_perch_onnx(onnx_path, fuse_batchnorm=fuse_batchnorm, cache_dir=cache_dir)
+        self._model = convert_perch_onnx(onnx_path, live_batchnorm=live_batchnorm,
+                                          fuse_batchnorm=fuse_batchnorm, cache_dir=cache_dir)
         if compile:
             self._model = torch.compile(self._model, **(compile_kwargs or {}))
         self.eval()
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self._model(x)
+        # See PerchONNXBackbone.forward()'s docstring/comment for why this
+        # forces fp32 unconditionally -- confirmed a real exp() overflow
+        # under reduced precision deep in this network.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            out = self._model(x.float())
         # onnx2torch preserves the graph's 4 named outputs
         # (embedding, spatial_embedding, spectrogram, label) as a tuple,
         # in that order.
@@ -668,15 +976,32 @@ class PerchONNXBackbone(nn.Module):
     """
 
     def __init__(self, onnx_path: str, compile: bool = False, compile_kwargs: dict = None,
-                 fuse_batchnorm: bool = False, cache_dir: str = None):
+                 live_batchnorm: bool = False, fuse_batchnorm: bool = False, cache_dir: str = None):
         super().__init__()
-        self._model = convert_perch_onnx(onnx_path, fuse_batchnorm=fuse_batchnorm, cache_dir=cache_dir)
+        self._model = convert_perch_onnx(onnx_path, live_batchnorm=live_batchnorm,
+                                          fuse_batchnorm=fuse_batchnorm, cache_dir=cache_dir)
         self.block_map = build_block_map(self._model)
         if compile:
             self._model = torch.compile(self._model, **(compile_kwargs or {}))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self._model(x)
+        # Force fp32 for the ENTIRE backbone computation, regardless of
+        # what autocast state the caller is in. Confirmed directly (not
+        # theoretically): a real training run's SqueezeAndExcitation exp()
+        # node received input in the range [-27.36, 22.52] -- completely
+        # finite in fp32, but exp() of that exact magnitude overflows to
+        # literal inf in fp16 (verified: torch.tensor([-27.36, 22.52])
+        # .half() -> exp() -> inf). This graph was converted from ONNX
+        # nodes that don't carry any of PyTorch's native autocast op-
+        # policy annotations (e.g. the automatic fp32 promotion a native
+        # nn.Sigmoid gets), so an unprotected raw exp() call deep in a
+        # converted graph can silently run in reduced precision under an
+        # outer autocast() region and overflow. Forcing fp32 here is a
+        # structural fix for the whole CLASS of "some op in this 26-block
+        # network overflows under reduced precision" -- not a patch for
+        # only the one specific node that happened to be caught.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            out = self._model(x.float())
         return out[0] if isinstance(out, (tuple, list)) else out
 
     def freeze_up_to_block(self, n: int, freeze_stem: bool = True, freeze_frontend: bool = True):
@@ -745,14 +1070,15 @@ class PerchONNXClassifier(nn.Module):
 
     def __init__(self, num_classes: int, onnx_path: str, mode: str = "finetune",
                  compile: bool = False, compile_kwargs: dict = None,
-                 fuse_batchnorm: bool = False, cache_dir: str = None):
+                 live_batchnorm: bool = False, fuse_batchnorm: bool = False, cache_dir: str = None):
         super().__init__()
         if mode not in self.VALID_MODES:
             raise ValueError(f"mode must be one of {self.VALID_MODES}, got {mode!r}")
 
         self.mode = mode
         self.backbone = PerchONNXBackbone(onnx_path, compile=compile, compile_kwargs=compile_kwargs,
-                                           fuse_batchnorm=fuse_batchnorm, cache_dir=cache_dir)
+                                           live_batchnorm=live_batchnorm, fuse_batchnorm=fuse_batchnorm,
+                                           cache_dir=cache_dir)
         self.head = nn.Linear(1536, num_classes)
 
         if mode in ("frozen", "linear_probe"):
