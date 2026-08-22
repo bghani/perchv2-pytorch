@@ -102,12 +102,12 @@ model = PerchONNXClassifier(num_classes=3, onnx_path="weights/perch_v2.onnx", mo
 
 **`cache_dir` is worth using from the start.** Converting the raw ONNX graph takes several seconds (real, per-node overhead in `onnx2torch` itself, proportional to graph size) — `cache_dir` saves the converted model after the first run and reuses it on every subsequent one (across script runs, notebook kernel restarts, etc.), turning that cost into a one-time tax instead of a per-run one. Use the *same* `cache_dir` across every model you construct from the same `.onnx` file in a session for this to help.
 
-Runnable, more complete versions of modes 1/3/4 are in [`examples/`](examples/) — `extract_embeddings.py`, `linear_probe.py`, `full_finetune.py` — and run out of the box against a synthetic toy dataset ([`examples/toy_dataset.py`](examples/toy_dataset.py)) once you've placed a real `perch_v2.onnx` at `weights/perch_v2.onnx`.
+Runnable, more complete versions of modes 1/2/4 are in [`examples/`](examples/) — `extract_embeddings.py`, `linear_probe.py`, `full_finetune.py` — and run out of the box against a synthetic toy dataset ([`examples/toy_dataset.py`](examples/toy_dataset.py)) once you've placed a real `perch_v2.onnx` at `weights/perch_v2.onnx`.
 
 ```bash
 python examples/extract_embeddings.py
-python examples/linear_probe.py
 python examples/full_finetune.py
+python examples/linear_probe.py
 ```
 
 This is purely to demonstrate the training loop mechanics (shapes, what receives gradients in each mode) — it's not real bioacoustic data, swap `ToySineDataset` for your own `Dataset` once you're ready to train on real recordings.
